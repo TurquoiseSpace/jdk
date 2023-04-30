@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -75,10 +75,7 @@ public class CDSArchiveUtils {
         "rw",          // ReadWrite
         "ro",          // ReadOnly
         "bm",          // relocation bitmaps
-        "first_closed_archive",
-        "last_closed_archive",
-        "first_open_archive",
-        "last_open_archive"
+        "hp",          // heap
     };
     private static int num_regions = shared_region_name.length;
 
@@ -94,13 +91,13 @@ public class CDSArchiveUtils {
             offsetCrc = wb.getCDSOffsetForName("GenericCDSFileMapHeader::_crc");
             offsetVersion = wb.getCDSOffsetForName("GenericCDSFileMapHeader::_version");
             offsetHeaderSize = wb.getCDSOffsetForName("GenericCDSFileMapHeader::_header_size");
-            offsetCommonAppClasspathPrefixSize = wb.getCDSOffsetForName("GenericCDSFileMapHeader::_common_app_classpath_prefix_size");
+            offsetCommonAppClasspathPrefixSize = wb.getCDSOffsetForName("FileMapHeader::_common_app_classpath_prefix_size");
             offsetBaseArchiveNameOffset = wb.getCDSOffsetForName("GenericCDSFileMapHeader::_base_archive_name_offset");
             offsetBaseArchiveNameSize = wb.getCDSOffsetForName("GenericCDSFileMapHeader::_base_archive_name_size");
             offsetJvmIdent = wb.getCDSOffsetForName("FileMapHeader::_jvm_ident");
             spOffsetCrc = wb.getCDSOffsetForName("CDSFileMapRegion::_crc");
             spUsedOffset = wb.getCDSOffsetForName("CDSFileMapRegion::_used") - spOffsetCrc;
-            spOffset = wb.getCDSOffsetForName("CDSFileMapHeaderBase::_space[0]") - offsetMagic;
+            spOffset = wb.getCDSOffsetForName("CDSFileMapHeaderBase::_regions[0]") - offsetMagic;
             // constants
             staticMagic = wb.getCDSConstantForName("static_magic");
             dynamicMagic = wb.getCDSConstantForName("dynamic_magic");

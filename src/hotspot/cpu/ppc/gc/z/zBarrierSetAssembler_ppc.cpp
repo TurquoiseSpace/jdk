@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2021, 2022 SAP SE. All rights reserved.
+ * Copyright (c) 2021, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2023 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -411,7 +411,7 @@ class ZSaveLiveRegisters {
 
     const int register_save_size = iterate_over_register_mask(ACTION_COUNT_ONLY) * BytesPerWord;
     _frame_size = align_up(register_save_size, frame::alignment_in_bytes)
-                  + frame::abi_reg_args_size;
+                  + frame::native_abi_reg_args_size;
 
     __ save_LR_CR(R0);
     __ push_frame(_frame_size, R0);
@@ -540,15 +540,15 @@ class ZSetupArguments {
 
       if (_ref != R4_ARG2) {
         // Calculate address first as the address' base register might clash with R4_ARG2
-        __ add(R4_ARG2, (intptr_t) _ref_addr.disp(), _ref_addr.base());
+        __ addi(R4_ARG2, _ref_addr.base(), _ref_addr.disp());
         __ mr_if_needed(R3_ARG1, _ref);
       } else if (_ref_addr.base() != R3_ARG1) {
         __ mr(R3_ARG1, _ref);
-        __ add(R4_ARG2, (intptr_t) _ref_addr.disp(), _ref_addr.base()); // Clobbering _ref
+        __ addi(R4_ARG2, _ref_addr.base(), _ref_addr.disp()); // Clobbering _ref
       } else {
         // Arguments are provided in inverse order (i.e. _ref == R4_ARG2, _ref_addr == R3_ARG1)
         __ mr(R0, _ref);
-        __ add(R4_ARG2, (intptr_t) _ref_addr.disp(), _ref_addr.base());
+        __ addi(R4_ARG2, _ref_addr.base(), _ref_addr.disp());
         __ mr(R3_ARG1, R0);
       }
     }

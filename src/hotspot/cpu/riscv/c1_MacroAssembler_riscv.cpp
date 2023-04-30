@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2023, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2014, Red Hat Inc. All rights reserved.
  * Copyright (c) 2020, 2022, Huawei Technologies Co., Ltd. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
@@ -66,7 +66,7 @@ int C1_MacroAssembler::lock_object(Register hdr, Register obj, Register disp_hdr
   if (DiagnoseSyncOnValueBasedClasses != 0) {
     load_klass(hdr, obj);
     lwu(hdr, Address(hdr, Klass::access_flags_offset()));
-    andi(t0, hdr, JVM_ACC_IS_VALUE_BASED_CLASS);
+    test_bit(t0, hdr, exact_log2(JVM_ACC_IS_VALUE_BASED_CLASS));
     bnez(t0, slow_case, true /* is_far */);
   }
 
@@ -80,7 +80,7 @@ int C1_MacroAssembler::lock_object(Register hdr, Register obj, Register disp_hdr
   // displaced header address in the object header - if it is not the same, get the
   // object header instead
   la(t1, Address(obj, hdr_offset));
-  cmpxchgptr(hdr, disp_hdr, t1, t0, done, /*fallthough*/NULL);
+  cmpxchgptr(hdr, disp_hdr, t1, t0, done, /*fallthough*/nullptr);
   // if the object header was the same, we're done
   // if the object header was not the same, it is now in the hdr register
   // => test if it is a stack pointer into the same stack (recursive locking), i.e.:
@@ -96,14 +96,16 @@ int C1_MacroAssembler::lock_object(Register hdr, Register obj, Register disp_hdr
   // assuming both the stack pointer and page_size have their least
   // significant 2 bits cleared and page_size is a power of 2
   sub(hdr, hdr, sp);
-  mv(t0, aligned_mask - os::vm_page_size());
+  mv(t0, aligned_mask - (int)os::vm_page_size());
   andr(hdr, hdr, t0);
   // for recursive locking, the result is zero => save it in the displaced header
-  // location (NULL in the displaced hdr location indicates recursive locking)
+  // location (null in the displaced hdr location indicates recursive locking)
   sd(hdr, Address(disp_hdr, 0));
   // otherwise we don't care about the result and handle locking via runtime call
   bnez(hdr, slow_case, /* is_far */ true);
+  // done
   bind(done);
+  increment(Address(xthread, JavaThread::held_monitor_count_offset()));
   return null_check_offset;
 }
 
@@ -115,7 +117,7 @@ void C1_MacroAssembler::unlock_object(Register hdr, Register obj, Register disp_
 
   // load displaced header
   ld(hdr, Address(disp_hdr, 0));
-  // if the loaded hdr is NULL we had recursive locking
+  // if the loaded hdr is null we had recursive locking
   // if we had recursive locking, we are done
   beqz(hdr, done);
   // load object
@@ -132,7 +134,9 @@ void C1_MacroAssembler::unlock_object(Register hdr, Register obj, Register disp_
   } else {
     cmpxchgptr(disp_hdr, hdr, obj, t1, done, &slow_case);
   }
+  // done
   bind(done);
+  decrement(Address(xthread, JavaThread::held_monitor_count_offset()));
 }
 
 // Defines obj, preserves var_size_in_bytes
@@ -145,13 +149,13 @@ void C1_MacroAssembler::try_allocate(Register obj, Register var_size_in_bytes, i
 }
 
 void C1_MacroAssembler::initialize_header(Register obj, Register klass, Register len, Register tmp1, Register tmp2) {
-  assert_different_registers(obj, klass, len);
+  assert_different_registers(obj, klass, len, tmp1, tmp2);
   // This assumes that all prototype bits fitr in an int32_t
   mv(tmp1, (int32_t)(intptr_t)markWord::prototype().value());
   sd(tmp1, Address(obj, oopDesc::mark_offset_in_bytes()));
 
   if (UseCompressedClassPointers) { // Take care not to kill klass
-    encode_klass_not_null(tmp1, klass);
+    encode_klass_not_null(tmp1, klass, tmp2);
     sw(tmp1, Address(obj, oopDesc::klass_offset_in_bytes()));
   } else {
     sd(klass, Address(obj, oopDesc::klass_offset_in_bytes()));
@@ -294,10 +298,11 @@ void C1_MacroAssembler::allocate_array(Register obj, Register len, Register tmp1
 
 void C1_MacroAssembler::inline_cache_check(Register receiver, Register iCache, Label &L) {
   verify_oop(receiver);
-  // explicit NULL check not needed since load from [klass_offset] causes a trap
+  // explicit null check not needed since load from [klass_offset] causes a trap
   // check against inline cache
   assert(!MacroAssembler::needs_explicit_null_check(oopDesc::klass_offset_in_bytes()), "must add explicit null check");
-  cmp_klass(receiver, iCache, t0, L);
+  assert_different_registers(receiver, iCache, t0, t2);
+  cmp_klass(receiver, iCache, t0, t2 /* call-clobbered t2 as a tmp */, L);
 }
 
 void C1_MacroAssembler::build_frame(int framesize, int bang_size_in_bytes) {
@@ -309,7 +314,7 @@ void C1_MacroAssembler::build_frame(int framesize, int bang_size_in_bytes) {
 
   // Insert nmethod entry barrier into frame.
   BarrierSetAssembler* bs = BarrierSet::barrier_set()->barrier_set_assembler();
-  bs->nmethod_entry_barrier(this, NULL /* slow_path */, NULL /* continuation */, NULL /* guard */);
+  bs->nmethod_entry_barrier(this, nullptr /* slow_path */, nullptr /* continuation */, nullptr /* guard */);
 }
 
 void C1_MacroAssembler::remove_frame(int framesize) {
@@ -393,8 +398,8 @@ static c1_float_cond_branch_insn c1_float_cond_branch[] =
   (c1_float_cond_branch_insn)&MacroAssembler::float_ble,
   (c1_float_cond_branch_insn)&MacroAssembler::float_bge,
   (c1_float_cond_branch_insn)&MacroAssembler::float_bgt,
-  NULL, // lir_cond_belowEqual
-  NULL, // lir_cond_aboveEqual
+  nullptr, // lir_cond_belowEqual
+  nullptr, // lir_cond_aboveEqual
 
   /* DOUBLE branches */
   (c1_float_cond_branch_insn)&MacroAssembler::double_beq,
@@ -403,8 +408,8 @@ static c1_float_cond_branch_insn c1_float_cond_branch[] =
   (c1_float_cond_branch_insn)&MacroAssembler::double_ble,
   (c1_float_cond_branch_insn)&MacroAssembler::double_bge,
   (c1_float_cond_branch_insn)&MacroAssembler::double_bgt,
-  NULL, // lir_cond_belowEqual
-  NULL  // lir_cond_aboveEqual
+  nullptr, // lir_cond_belowEqual
+  nullptr  // lir_cond_aboveEqual
 };
 
 void C1_MacroAssembler::c1_cmp_branch(int cmpFlag, Register op1, Register op2, Label& label,

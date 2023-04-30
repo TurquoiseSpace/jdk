@@ -1,7 +1,7 @@
 /*
- * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2023, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2014, 2020, Red Hat Inc. All rights reserved.
- * Copyright (c) 2020, 2022, Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2020, 2023, Huawei Technologies Co., Ltd. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,7 +27,7 @@
 #ifndef CPU_RISCV_MACROASSEMBLER_RISCV_HPP
 #define CPU_RISCV_MACROASSEMBLER_RISCV_HPP
 
-#include "asm/assembler.hpp"
+#include "asm/assembler.inline.hpp"
 #include "code/vmreg.hpp"
 #include "metaprogramming/enableIf.hpp"
 #include "nativeInst_riscv.hpp"
@@ -44,8 +44,6 @@ class MacroAssembler: public Assembler {
  public:
   MacroAssembler(CodeBuffer* code) : Assembler(code) {}
 
-  virtual ~MacroAssembler() {}
-
   void safepoint_poll(Label& slow_path, bool at_return, bool acquire, bool in_nmethod);
 
   // Alignment
@@ -54,6 +52,9 @@ class MacroAssembler: public Assembler {
   static inline void assert_alignment(address pc, int alignment = NativeInstruction::instruction_size) {
     assert(is_aligned(pc, alignment), "bad alignment");
   }
+
+  // nop
+  void post_call_nop();
 
   // Stack frame creation/removal
   // Note that SP must be updated to the right place before saving/restoring RA and FP
@@ -153,7 +154,7 @@ class MacroAssembler: public Assembler {
   virtual void call_VM_leaf_base(
     address entry_point,                // the entry point
     int     number_of_arguments,        // the number of arguments to pop after the call
-    Label*  retaddr = NULL
+    Label*  retaddr = nullptr
   );
 
   virtual void call_VM_leaf_base(
@@ -180,6 +181,7 @@ class MacroAssembler: public Assembler {
   void resolve_weak_handle(Register result, Register tmp1, Register tmp2);
   void resolve_oop_handle(Register result, Register tmp1, Register tmp2);
   void resolve_jobject(Register value, Register tmp1, Register tmp2);
+  void resolve_global_jobject(Register value, Register tmp1, Register tmp2);
 
   void movoop(Register dst, jobject obj);
   void mov_metadata(Register dst, Metadata* obj);
@@ -192,14 +194,14 @@ class MacroAssembler: public Assembler {
                       Address src, Register tmp1, Register tmp2);
   void access_store_at(BasicType type, DecoratorSet decorators, Address dst,
                        Register val, Register tmp1, Register tmp2, Register tmp3);
-  void load_klass(Register dst, Register src);
-  void store_klass(Register dst, Register src);
-  void cmp_klass(Register oop, Register trial_klass, Register tmp, Label &L);
+  void load_klass(Register dst, Register src, Register tmp = t0);
+  void store_klass(Register dst, Register src, Register tmp = t0);
+  void cmp_klass(Register oop, Register trial_klass, Register tmp1, Register tmp2, Label &L);
 
-  void encode_klass_not_null(Register r);
-  void decode_klass_not_null(Register r);
-  void encode_klass_not_null(Register dst, Register src, Register tmp = xheapbase);
-  void decode_klass_not_null(Register dst, Register src, Register tmp = xheapbase);
+  void encode_klass_not_null(Register r, Register tmp = t0);
+  void decode_klass_not_null(Register r, Register tmp = t0);
+  void encode_klass_not_null(Register dst, Register src, Register tmp);
+  void decode_klass_not_null(Register dst, Register src, Register tmp);
   void decode_heap_oop_not_null(Register r);
   void decode_heap_oop_not_null(Register dst, Register src);
   void decode_heap_oop(Register d, Register s);
@@ -216,19 +218,19 @@ class MacroAssembler: public Assembler {
   void store_klass_gap(Register dst, Register src);
 
   // currently unimplemented
-  // Used for storing NULL. All other oop constants should be
+  // Used for storing null. All other oop constants should be
   // stored using routines that take a jobject.
   void store_heap_oop_null(Address dst);
 
   // This dummy is to prevent a call to store_heap_oop from
-  // converting a zero (linked NULL) into a Register by giving
+  // converting a zero (linked null) into a Register by giving
   // the compiler two choices it can't resolve
 
   void store_heap_oop(Address dst, void* dummy);
 
-  // Support for NULL-checks
+  // Support for null-checks
   //
-  // Generates code that causes a NULL OS exception if the content of reg is NULL.
+  // Generates code that causes a null OS exception if the content of reg is null.
   // If the accessed location is M[reg + offset] and the offset is known, provide the
   // offset. No explicit code generateion is needed if the offset is within a certain
   // range (0 <= offset <= page_size).
@@ -262,7 +264,18 @@ class MacroAssembler: public Assembler {
   // actually be used: you must use the Address that is returned. It
   // is up to you to ensure that the shift provided matches the size
   // of your data.
-  Address form_address(Register Rd, Register base, long byte_offset);
+  Address form_address(Register Rd, Register base, int64_t byte_offset);
+
+  // Sometimes we get misaligned loads and stores, usually from Unsafe
+  // accesses, and these can exceed the offset range.
+  Address legitimize_address(Register Rd, const Address &adr) {
+    if (adr.getMode() == Address::base_plus_offset) {
+      if (!is_simm12(adr.offset())) {
+        return form_address(Rd, adr.base(), adr.offset());
+      }
+    }
+    return adr;
+  }
 
   // allocation
   void tlab_allocate(
@@ -278,7 +291,7 @@ class MacroAssembler: public Assembler {
   // Test sub_klass against super_klass, with fast and slow paths.
 
   // The fast path produces a tri-state answer: yes / no / maybe-slow.
-  // One of the three labels can be NULL, meaning take the fall-through.
+  // One of the three labels can be null, meaning take the fall-through.
   // If super_check_offset is -1, the value is loaded up from super_klass.
   // No registers are killed, except tmp_reg
   void check_klass_subtype_fast_path(Register sub_klass,
@@ -344,7 +357,8 @@ class MacroAssembler: public Assembler {
 
   void membar(uint32_t order_constraint);
 
-  static void membar_mask_to_pred_succ(uint32_t order_constraint, uint32_t& predecessor, uint32_t& successor) {
+  static void membar_mask_to_pred_succ(uint32_t order_constraint,
+                                       uint32_t& predecessor, uint32_t& successor) {
     predecessor = (order_constraint >> 2) & 0x3;
     successor = order_constraint & 0x3;
 
@@ -362,6 +376,10 @@ class MacroAssembler: public Assembler {
     return ((predecessor & 0x3) << 2) | (successor & 0x3);
   }
 
+  void pause() {
+    fence(w, 0);
+  }
+
   // prints msg, dumps registers and stops execution
   void stop(const char* msg);
 
@@ -376,7 +394,7 @@ class MacroAssembler: public Assembler {
   // Required platform-specific helpers for Label::patch_instructions.
   // They _shadow_ the declarations in AbstractAssembler, which are undefined.
   static int pd_patch_instruction_size(address branch, address target);
-  static void pd_patch_instruction(address branch, address target, const char* file = NULL, int line = 0) {
+  static void pd_patch_instruction(address branch, address target, const char* file = nullptr, int line = 0) {
     pd_patch_instruction_size(branch, target);
   }
   static address pd_call_destination(address branch) {
@@ -384,8 +402,19 @@ class MacroAssembler: public Assembler {
   }
 
   static int patch_oop(address insn_addr, address o);
+
+  static address get_target_of_li32(address insn_addr);
+  static int patch_imm_in_li32(address branch, int32_t target);
+
+  // Return whether code is emitted to a scratch blob.
+  virtual bool in_scratch_emit_size() {
+    return false;
+  }
+
   address emit_trampoline_stub(int insts_call_instruction_offset, address target);
+  static int max_trampoline_stub_size();
   void emit_static_call_stub();
+  static int static_call_stub_size();
 
   // The following 4 methods return the offset of the appropriate move instruction
 
@@ -403,25 +432,86 @@ class MacroAssembler: public Assembler {
 
  public:
   // Standard pseudo instructions
-  void nop();
-  void mv(Register Rd, Register Rs);
-  void notr(Register Rd, Register Rs);
-  void neg(Register Rd, Register Rs);
-  void negw(Register Rd, Register Rs);
-  void sext_w(Register Rd, Register Rs);
-  void zext_b(Register Rd, Register Rs);
-  void seqz(Register Rd, Register Rs);          // set if = zero
-  void snez(Register Rd, Register Rs);          // set if != zero
-  void sltz(Register Rd, Register Rs);          // set if < zero
-  void sgtz(Register Rd, Register Rs);          // set if > zero
+  inline void nop() {
+    addi(x0, x0, 0);
+  }
+
+  inline void mv(Register Rd, Register Rs) {
+    if (Rd != Rs) {
+      addi(Rd, Rs, 0);
+    }
+  }
+
+  inline void notr(Register Rd, Register Rs) {
+    xori(Rd, Rs, -1);
+  }
+
+  inline void neg(Register Rd, Register Rs) {
+    sub(Rd, x0, Rs);
+  }
+
+  inline void negw(Register Rd, Register Rs) {
+    subw(Rd, x0, Rs);
+  }
+
+  inline void sext_w(Register Rd, Register Rs) {
+    addiw(Rd, Rs, 0);
+  }
+
+  inline void zext_b(Register Rd, Register Rs) {
+    andi(Rd, Rs, 0xFF);
+  }
+
+  inline void seqz(Register Rd, Register Rs) {
+    sltiu(Rd, Rs, 1);
+  }
+
+  inline void snez(Register Rd, Register Rs) {
+    sltu(Rd, x0, Rs);
+  }
+
+  inline void sltz(Register Rd, Register Rs) {
+    slt(Rd, Rs, x0);
+  }
+
+  inline void sgtz(Register Rd, Register Rs) {
+    slt(Rd, x0, Rs);
+  }
+
+  // Bit-manipulation extension pseudo instructions
+  // zero extend word
+  inline void zext_w(Register Rd, Register Rs) {
+    add_uw(Rd, Rs, zr);
+  }
 
   // Floating-point data-processing pseudo instructions
-  void fmv_s(FloatRegister Rd, FloatRegister Rs);
-  void fabs_s(FloatRegister Rd, FloatRegister Rs);
-  void fneg_s(FloatRegister Rd, FloatRegister Rs);
-  void fmv_d(FloatRegister Rd, FloatRegister Rs);
-  void fabs_d(FloatRegister Rd, FloatRegister Rs);
-  void fneg_d(FloatRegister Rd, FloatRegister Rs);
+  inline void fmv_s(FloatRegister Rd, FloatRegister Rs) {
+    if (Rd != Rs) {
+      fsgnj_s(Rd, Rs, Rs);
+    }
+  }
+
+  inline void fabs_s(FloatRegister Rd, FloatRegister Rs) {
+    fsgnjx_s(Rd, Rs, Rs);
+  }
+
+  inline void fneg_s(FloatRegister Rd, FloatRegister Rs) {
+    fsgnjn_s(Rd, Rs, Rs);
+  }
+
+  inline void fmv_d(FloatRegister Rd, FloatRegister Rs) {
+    if (Rd != Rs) {
+      fsgnj_d(Rd, Rs, Rs);
+    }
+  }
+
+  inline void fabs_d(FloatRegister Rd, FloatRegister Rs) {
+    fsgnjx_d(Rd, Rs, Rs);
+  }
+
+  inline void fneg_d(FloatRegister Rd, FloatRegister Rs) {
+    fsgnjn_d(Rd, Rs, Rs);
+  }
 
   // Control and status pseudo instructions
   void rdinstret(Register Rd);                  // read instruction-retired counter
@@ -499,9 +589,9 @@ class MacroAssembler: public Assembler {
 
 #define INSN(NAME)                                                                                       \
   void NAME(Register Rs1, Register Rs2, const address dest) {                                            \
-    assert_cond(dest != NULL);                                                                           \
+    assert_cond(dest != nullptr);                                                                        \
     int64_t offset = dest - pc();                                                                        \
-    guarantee(is_imm_in_range(offset, 12, 1), "offset is invalid.");                                     \
+    guarantee(is_simm13(offset) && ((offset % 2) == 0), "offset is invalid.");                           \
     Assembler::NAME(Rs1, Rs2, offset);                                                                   \
   }                                                                                                      \
   INSN_ENTRY_RELOC(void, NAME(Register Rs1, Register Rs2, address dest, relocInfo::relocType rtype))     \
@@ -572,6 +662,9 @@ public:
   void push_CPU_state(bool save_vectors = false, int vector_size_in_bytes = 0);
   void pop_CPU_state(bool restore_vectors = false, int vector_size_in_bytes = 0);
 
+  void push_cont_fastpath(Register java_thread);
+  void pop_cont_fastpath(Register java_thread);
+
   // if heap base register is used - reinit it with the correct value
   void reinit_heapbase();
 
@@ -592,16 +685,13 @@ public:
                   compare_and_branch_insn insn,
                   compare_and_branch_label_insn neg_insn, bool is_far = false);
 
-  void baseOffset(Register Rd, const Address &adr, int32_t &offset);
-  void baseOffset32(Register Rd, const Address &adr, int32_t &offset);
-
   void la(Register Rd, Label &label);
   void la(Register Rd, const address dest);
   void la(Register Rd, const Address &adr);
 
   void li32(Register Rd, int32_t imm);
   void li64(Register Rd, int64_t imm);
-  void li(Register Rd, int64_t imm);  // optimized load immediate
+  void li  (Register Rd, int64_t imm);  // optimized load immediate
 
   // mv
   void mv(Register Rd, address addr)                  { li(Rd, (int64_t)addr); }
@@ -615,14 +705,32 @@ public:
   template<typename T, ENABLE_IF(std::is_integral<T>::value)>
   inline void mv(Register Rd, T o)                    { li(Rd, (int64_t)o); }
 
-  inline void mvw(Register Rd, int32_t imm32)         { mv(Rd, imm32); }
+  void mv(Register Rd, Address dest) {
+    assert(dest.getMode() == Address::literal, "Address mode should be Address::literal");
+    relocate(dest.rspec(), [&] {
+      movptr(Rd, dest.target());
+    });
+  }
 
-  void mv(Register Rd, Address dest);
-  void mv(Register Rd, RegisterOrConstant src);
+  void mv(Register Rd, RegisterOrConstant src) {
+    if (src.is_register()) {
+      mv(Rd, src.as_register());
+    } else {
+      mv(Rd, src.as_constant());
+    }
+  }
 
-  void movptr(Register Rd, address addr);
   void movptr(Register Rd, address addr, int32_t &offset);
-  void movptr(Register Rd, uintptr_t imm64);
+
+  void movptr(Register Rd, address addr) {
+    int offset = 0;
+    movptr(Rd, addr, offset);
+    addi(Rd, Rd, offset);
+  }
+
+  inline void movptr(Register Rd, uintptr_t imm64) {
+    movptr(Rd, (address)imm64);
+  }
 
   // arith
   void add (Register Rd, Register Rn, int64_t increment, Register temp = t0);
@@ -671,9 +779,9 @@ public:
 
 #define INSN(NAME)                                                                                 \
   void NAME(Register Rd, address dest) {                                                           \
-    assert_cond(dest != NULL);                                                                     \
+    assert_cond(dest != nullptr);                                                                  \
     int64_t distance = dest - pc();                                                                \
-    if (is_offset_in_range(distance, 32)) {                                                        \
+    if (is_simm32(distance)) {                                                                     \
       auipc(Rd, (int32_t)distance + 0x800);                                                        \
       Assembler::NAME(Rd, Rd, ((int32_t)distance << 20) >> 20);                                    \
     } else {                                                                                       \
@@ -694,15 +802,15 @@ public:
         break;                                                                                     \
       }                                                                                            \
       case Address::base_plus_offset: {                                                            \
-        if (is_offset_in_range(adr.offset(), 12)) {                                                \
+        if (is_simm12(adr.offset())) {                                                             \
           Assembler::NAME(Rd, adr.base(), adr.offset());                                           \
         } else {                                                                                   \
-          int32_t offset = 0;                                                                      \
+          int32_t offset = ((int32_t)adr.offset() << 20) >> 20;                                    \
           if (Rd == adr.base()) {                                                                  \
-            baseOffset32(temp, adr, offset);                                                       \
+            la(temp, Address(adr.base(), adr.offset() - offset));                                  \
             Assembler::NAME(Rd, temp, offset);                                                     \
           } else {                                                                                 \
-            baseOffset32(Rd, adr, offset);                                                         \
+            la(Rd, Address(adr.base(), adr.offset() - offset));                                    \
             Assembler::NAME(Rd, Rd, offset);                                                       \
           }                                                                                        \
         }                                                                                          \
@@ -728,9 +836,9 @@ public:
 
 #define INSN(NAME)                                                                                 \
   void NAME(FloatRegister Rd, address dest, Register temp = t0) {                                  \
-    assert_cond(dest != NULL);                                                                     \
+    assert_cond(dest != nullptr);                                                                  \
     int64_t distance = dest - pc();                                                                \
-    if (is_offset_in_range(distance, 32)) {                                                        \
+    if (is_simm32(distance)) {                                                                     \
       auipc(temp, (int32_t)distance + 0x800);                                                      \
       Assembler::NAME(Rd, temp, ((int32_t)distance << 20) >> 20);                                  \
     } else {                                                                                       \
@@ -752,11 +860,11 @@ public:
         break;                                                                                     \
       }                                                                                            \
       case Address::base_plus_offset: {                                                            \
-        if (is_offset_in_range(adr.offset(), 12)) {                                                \
+        if (is_simm12(adr.offset())) {                                                             \
           Assembler::NAME(Rd, adr.base(), adr.offset());                                           \
         } else {                                                                                   \
-          int32_t offset = 0;                                                                      \
-          baseOffset32(temp, adr, offset);                                                         \
+          int32_t offset = ((int32_t)adr.offset() << 20) >> 20;                                    \
+          la(temp, Address(adr.base(), adr.offset() - offset));                                    \
           Assembler::NAME(Rd, temp, offset);                                                       \
         }                                                                                          \
         break;                                                                                     \
@@ -788,10 +896,10 @@ public:
 
 #define INSN(NAME)                                                                                 \
   void NAME(Register Rs, address dest, Register temp = t0) {                                       \
-    assert_cond(dest != NULL);                                                                     \
+    assert_cond(dest != nullptr);                                                                  \
     assert_different_registers(Rs, temp);                                                          \
     int64_t distance = dest - pc();                                                                \
-    if (is_offset_in_range(distance, 32)) {                                                        \
+    if (is_simm32(distance)) {                                                                     \
       auipc(temp, (int32_t)distance + 0x800);                                                      \
       Assembler::NAME(Rs, temp, ((int32_t)distance << 20) >> 20);                                  \
     } else {                                                                                       \
@@ -810,12 +918,12 @@ public:
         break;                                                                                     \
       }                                                                                            \
       case Address::base_plus_offset: {                                                            \
-        if (is_offset_in_range(adr.offset(), 12)) {                                                \
+        if (is_simm12(adr.offset())) {                                                             \
           Assembler::NAME(Rs, adr.base(), adr.offset());                                           \
         } else {                                                                                   \
-          int32_t offset= 0;                                                                       \
           assert_different_registers(Rs, temp);                                                    \
-          baseOffset32(temp, adr, offset);                                                         \
+          int32_t offset = ((int32_t)adr.offset() << 20) >> 20;                                    \
+          la(temp, Address(adr.base(), adr.offset() - offset));                                    \
           Assembler::NAME(Rs, temp, offset);                                                       \
         }                                                                                          \
         break;                                                                                     \
@@ -834,9 +942,9 @@ public:
 
 #define INSN(NAME)                                                                                 \
   void NAME(FloatRegister Rs, address dest, Register temp = t0) {                                  \
-    assert_cond(dest != NULL);                                                                     \
+    assert_cond(dest != nullptr);                                                                  \
     int64_t distance = dest - pc();                                                                \
-    if (is_offset_in_range(distance, 32)) {                                                        \
+    if (is_simm32(distance)) {                                                                     \
       auipc(temp, (int32_t)distance + 0x800);                                                      \
       Assembler::NAME(Rs, temp, ((int32_t)distance << 20) >> 20);                                  \
     } else {                                                                                       \
@@ -854,11 +962,11 @@ public:
         break;                                                                                     \
       }                                                                                            \
       case Address::base_plus_offset: {                                                            \
-        if (is_offset_in_range(adr.offset(), 12)) {                                                \
+        if (is_simm12(adr.offset())) {                                                             \
           Assembler::NAME(Rs, adr.base(), adr.offset());                                           \
         } else {                                                                                   \
-          int32_t offset = 0;                                                                      \
-          baseOffset32(temp, adr, offset);                                                         \
+          int32_t offset = ((int32_t)adr.offset() << 20) >> 20;                                    \
+          la(temp, Address(adr.base(), adr.offset() - offset));                                    \
           Assembler::NAME(Rs, temp, offset);                                                       \
         }                                                                                          \
         break;                                                                                     \
@@ -1030,7 +1138,7 @@ public:
   // - relocInfo::static_call_type
   // - relocInfo::virtual_call_type
   //
-  // Return: the call PC or NULL if CodeCache is full.
+  // Return: the call PC or null if CodeCache is full.
   address trampoline_call(Address entry);
   address ic_call(address entry, jint method_index = 0);
 
@@ -1042,15 +1150,15 @@ public:
   // to use a 2nd scratch register to hold the constant. so, an address
   // increment/decrement may trash both t0 and t1.
 
-  void increment(const Address dst, int64_t value = 1);
-  void incrementw(const Address dst, int32_t value = 1);
+  void increment(const Address dst, int64_t value = 1, Register tmp1 = t0, Register tmp2 = t1);
+  void incrementw(const Address dst, int32_t value = 1, Register tmp1 = t0, Register tmp2 = t1);
 
-  void decrement(const Address dst, int64_t value = 1);
-  void decrementw(const Address dst, int32_t value = 1);
+  void decrement(const Address dst, int64_t value = 1, Register tmp1 = t0, Register tmp2 = t1);
+  void decrementw(const Address dst, int32_t value = 1, Register tmp1 = t0, Register tmp2 = t1);
 
   void cmpptr(Register src1, Address src2, Label& equal);
 
-  void clinit_barrier(Register klass, Register tmp, Label* L_fast_path = NULL, Label* L_slow_path = NULL);
+  void clinit_barrier(Register klass, Register tmp, Label* L_fast_path = nullptr, Label* L_slow_path = nullptr);
   void load_method_holder_cld(Register result, Register method);
   void load_method_holder(Register holder, Register method);
 
@@ -1102,6 +1210,9 @@ public:
   // shift left by shamt and add
   void shadd(Register Rd, Register Rs1, Register Rs2, Register tmp, int shamt);
 
+  // test single bit in Rs, result is set to Rd
+  void test_bit(Register Rd, Register Rs, uint32_t bit_pos, Register tmp = t0);
+
   // Here the float instructions with safe deal with some exceptions.
   // e.g. convert from NaN, +Inf, -Inf to int, float, double
   // will trigger exception, we need to deal with these situations
@@ -1148,6 +1259,62 @@ public:
     }
   }
 
+  // vector pseudo instructions
+  inline void vmnot_m(VectorRegister vd, VectorRegister vs) {
+    vmnand_mm(vd, vs, vs);
+  }
+
+  inline void vncvt_x_x_w(VectorRegister vd, VectorRegister vs, VectorMask vm = unmasked) {
+    vnsrl_wx(vd, vs, x0, vm);
+  }
+
+  inline void vneg_v(VectorRegister vd, VectorRegister vs) {
+    vrsub_vx(vd, vs, x0);
+  }
+
+  inline void vfneg_v(VectorRegister vd, VectorRegister vs) {
+    vfsgnjn_vv(vd, vs, vs);
+  }
+
+  inline void vmsgt_vv(VectorRegister vd, VectorRegister vs2, VectorRegister vs1, VectorMask vm = unmasked) {
+    vmslt_vv(vd, vs1, vs2, vm);
+  }
+
+  inline void vmsgtu_vv(VectorRegister vd, VectorRegister vs2, VectorRegister vs1, VectorMask vm = unmasked) {
+    vmsltu_vv(vd, vs1, vs2, vm);
+  }
+
+  inline void vmsge_vv(VectorRegister vd, VectorRegister vs2, VectorRegister vs1, VectorMask vm = unmasked) {
+    vmsle_vv(vd, vs1, vs2, vm);
+  }
+
+  inline void vmsgeu_vv(VectorRegister vd, VectorRegister vs2, VectorRegister vs1, VectorMask vm = unmasked) {
+    vmsleu_vv(vd, vs1, vs2, vm);
+  }
+
+  inline void vmfgt_vv(VectorRegister vd, VectorRegister vs2, VectorRegister vs1, VectorMask vm = unmasked) {
+    vmflt_vv(vd, vs1, vs2, vm);
+  }
+
+  inline void vmfge_vv(VectorRegister vd, VectorRegister vs2, VectorRegister vs1, VectorMask vm = unmasked) {
+    vmfle_vv(vd, vs1, vs2, vm);
+  }
+
+  // Copy mask register
+  inline void vmmv_m(VectorRegister vd, VectorRegister vs) {
+    vmand_mm(vd, vs, vs);
+  }
+
+  // Clear mask register
+  inline void vmclr_m(VectorRegister vd) {
+    vmxor_mm(vd, vd, vd);
+  }
+
+  // Set mask register
+  inline void vmset_m(VectorRegister vd) {
+    vmxnor_mm(vd, vd, vd);
+  }
+
   static const int zero_words_block_size;
 
   void cast_primitive_type(BasicType type, Register Rt) {
@@ -1189,12 +1356,6 @@ public:
   // if [src1 < src2], dst = -1;
   void cmp_l2i(Register dst, Register src1, Register src2, Register tmp = t0);
 
-  // vext
-  void vmnot_m(VectorRegister vd, VectorRegister vs);
-  void vncvt_x_x_w(VectorRegister vd, VectorRegister vs, VectorMask vm = unmasked);
-  void vfneg_v(VectorRegister vd, VectorRegister vs);
-
-
   // support for argument shuffling
   void move32_64(VMRegPair src, VMRegPair dst, Register tmp = t0);
   void float_move(VMRegPair src, VMRegPair dst, Register tmp = t0);
@@ -1207,22 +1368,19 @@ public:
                    VMRegPair dst,
                    bool is_receiver,
                    int* receiver_offset);
-
   void rt_call(address dest, Register tmp = t0);
 
   void call(const address dest, Register temp = t0) {
-    assert_cond(dest != NULL);
-    assert(temp != noreg, "temp must not be empty register!");
+    assert_cond(dest != nullptr);
+    assert(temp != noreg, "expecting a register");
     int32_t offset = 0;
     mv(temp, dest, offset);
     jalr(x1, temp, offset);
   }
 
-  void ret() {
+  inline void ret() {
     jalr(x0, x1, 0);
   }
-
-private:
 
 #ifdef ASSERT
   // Template short-hand support to clean-up after a failed call to trampoline
@@ -1237,13 +1395,10 @@ private:
     lbl.reset();
   }
 #endif
-  void repne_scan(Register addr, Register value, Register count, Register tmp);
 
-  // Return true if an address is within the 48-bit RISCV64 address space.
-  bool is_valid_riscv64_address(address addr) {
-    // sv48: must have bits 63–48 all equal to bit 47
-    return ((uintptr_t)addr >> 47) == 0;
-  }
+private:
+
+  void repne_scan(Register addr, Register value, Register count, Register tmp);
 
   void ld_constant(Register dest, const Address &const_addr) {
     if (NearCpool) {
@@ -1259,7 +1414,7 @@ private:
   }
 
   int bitset_to_regs(unsigned int bitset, unsigned char* regs);
-  Address add_memory_helper(const Address dst);
+  Address add_memory_helper(const Address dst, Register tmp);
 
   void load_reserved(Register addr, enum operand_size size, Assembler::Aqrl acquire);
   void store_conditional(Register addr, Register new_val, enum operand_size size, Assembler::Aqrl release);
